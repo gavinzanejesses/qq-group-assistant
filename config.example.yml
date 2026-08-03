@@ -1,0 +1,133 @@
+# 先复制为 config.yml，再修改。群号可在 QQ 群资料中查看。
+group_id: 123456789
+all_groups: false
+
+admin_commands:
+  enabled: false
+  authorized_users:
+    - 123456789
+  max_mute_seconds: 2592000
+
+public_account_reminder:
+  enabled: false
+  cron: "0 9-21/2 * * *"
+  schedule:
+    mode: daily_interval
+    start_hour: 9
+    end_hour: 21
+    interval_hours: 2
+    minute: 0
+  message: "请大家关注学院官方公众号，及时获取学院通知与活动信息。扫描下方二维码即可关注："
+
+ai_qa:
+  enabled: false
+  model: "glm-4.7-flash"
+  endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  timeout_seconds: 30
+  cooldown_seconds: 20
+  max_question_chars: 500
+  max_answer_chars: 500
+
+scam_protection:
+  enabled: true
+  mute_seconds: 86400
+  trusted_group_ids: []
+  patterns:
+    - "(?i)(?:兼职|返利|刷单|投资|贷款|博彩|福利).{0,16}(?:群|加我|私聊|二维码)"
+  suspicious_patterns:
+    - "(?i)(?:https?://)?(?:qm|jq|qun)\\.qq\\.com/"
+    - "(?i)(?:QQ群|群号)\\s*[:：]?\\s*\\d{5,12}"
+    - "(?i)(?:点击|扫码).{0,10}(?:进群|加群|加入群)"
+    - "(?i)(?:抓紧|赶快|尽快|速度).{0,20}(?:进群|加群|加入群)"
+    - "(?i)(?:剩下|还没加|没有加).{0,24}(?:进群|加群|加入群)"
+    - "(?i)(?:进群|加群|加入群).{0,20}(?:不要错过|重要通知|统一通知)"
+    - "(?i)(?:不要错过|重要通知|统一通知).{0,20}(?:进群|加群|加入群)"
+
+remark:
+  enabled: false
+  # 示例格式：专业-姓名，例如“计算机科学与技术-张三”
+  pattern: "^[\\u4e00-\\u9fa5A-Za-z0-9（）()·]{2,30}-[\\u4e00-\\u9fa5A-Za-z·]{2,12}$"
+  example: "新生：25 计科 张三（年级＋专业＋姓名）\n社团负责人：**协会 李四（社团名称＋姓名）"
+  # 每天 09:00 和 20:00 检查；避免频繁打扰。
+  cron: "0 9,20 * * *"
+  schedule:
+    mode: daily_times
+    times: ["09:00", "20:00"]
+  batch_size: 15
+  remind_cooldown_hours: 24
+  auto_kick_enabled: false
+  kick_after_reminders: 3
+  group_message_template: |-
+    请以下成员尽快按群公告修改群名片，这是第{current}/{total}次提醒；连续{total}次提醒后仍未修改者将进入待清理名单，由管理员审核：
+    {mentions}
+    格式示例：{example}
+  private_message_template: |-
+    你好，你所在群聊中的群名片仍未按要求设置。你已收到{total}次群内提醒，请尽快修改：
+    {example}
+    若仍未修改，你将进入待清理名单。本消息由群机器人自动发送。
+
+join_review:
+  enabled: true
+  format_example: "25 计科 张三"
+  allowed_years: ["25", "2025", "25级"]
+  allowed_majors: ["计科", "网安", "计算机科学与技术", "网络空间安全"]
+  name_min_length: 2
+  name_max_length: 6
+  forbidden_words: ["广告", "刷单", "贷款"]
+  auto_reject_invalid: false
+  fields:
+    - name: "年级"
+      kind: options
+      options: ["25", "2025", "25级"]
+      example: "25"
+      min_length: 1
+      max_length: 8
+    - name: "专业"
+      kind: options
+      options: ["计科", "网安", "计算机科学与技术", "网络空间安全"]
+      example: "计科"
+      min_length: 2
+      max_length: 20
+    - name: "姓名"
+      kind: chinese
+      example: "张三"
+      min_length: 2
+      max_length: 6
+  # 申请理由命中任一拒绝规则时自动拒绝；拒绝优先。
+  deny_patterns:
+    - "(?i)(广告|兼职刷单|引流|代购|贷款)"
+  # 命中任一通过规则时自动同意。请替换为迎新群实际验证答案。
+  approve_patterns:
+    - "(?i)河北大学"
+  # 未命中规则时保留给管理员人工处理，不会误拒。
+  reject_reason: "申请信息未通过自动校验，请按群公告要求重新申请。"
+
+moderation:
+  enabled: true
+  # 建议先保持 true 观察日志，确认规则后再改为 false。
+  dry_run: true
+  warn_after_delete: true
+  rules:
+    - name: "校园卡或电话卡推销"
+      pattern: "(?i)(?:校园卡|电话卡|流量卡).{0,24}(?:便宜|优惠|低价|有需要|需要的|找我|私聊|联系我|代办)"
+    - name: "疑似广告引流"
+      pattern: "(?i)(刷单|返利|贷款|博彩|赌场|加微信|加vx|兼职日结)"
+    - name: "人身攻击"
+      pattern: "(?i)(傻[逼比]|操你|草你|去死)"
+  # 命中白名单的消息不处理。
+  allow_patterns:
+    - "这是反诈宣传"
+  # 简单关键词可直接填写；复杂匹配继续使用上方 rules 正则。
+  blocked_words: []
+
+# 可添加任意数量的独立定时推送。修改后重启机器人使计划生效。
+scheduled_pushes:
+  - id: welcome_notice
+    name: "迎新提示"
+    enabled: false
+    cron: "0 10,16 * * *"
+    schedule:
+      mode: daily_times
+      times: ["10:00", "16:00"]
+    group_id: 123456789
+    message: "欢迎新同学，请先阅读群公告并按要求修改群名片。"

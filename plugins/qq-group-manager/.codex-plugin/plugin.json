@@ -1,0 +1,18 @@
+{
+  "name": "qq-group-manager",
+  "version": "0.1.0",
+  "description": "Configure, deploy, diagnose and safely operate a OneBot QQ group assistant.",
+  "author": {
+    "name": "QQ Group Assistant contributors"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "QQ Group Manager",
+    "shortDescription": "Configure and maintain a safer QQ group assistant.",
+    "longDescription": "Turns natural-language QQ group requirements into validated policies, deployment steps, health checks and audited maintenance workflows for the open-source OneBot assistant.",
+    "developerName": "QQ Group Assistant contributors",
+    "category": "Productivity",
+    "capabilities": ["skills"],
+    "defaultPrompt": "Use the QQ Group Manager skill to configure and safely operate my QQ group assistant."
+  }
+}

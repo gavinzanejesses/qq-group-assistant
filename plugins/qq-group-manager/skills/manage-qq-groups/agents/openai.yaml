@@ -1,0 +1,4 @@
+interface:
+  display_name: "QQ 群管理助手"
+  short_description: "配置、部署和维护 OneBot QQ 群管理机器人"
+  default_prompt: "Use $manage-qq-groups to configure and safely operate my QQ group assistant."

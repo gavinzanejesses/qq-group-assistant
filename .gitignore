@@ -1,0 +1,16 @@
+.venv/
+build/
+.env
+config.yml
+config.yml*.bak
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+knowledge.md
+assets/official_account_qr.png
+assets/uploads/
+noncompliant_members.csv
+pending_removals.csv
