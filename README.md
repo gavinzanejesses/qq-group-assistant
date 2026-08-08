@@ -7,35 +7,51 @@
 ## 功能
 
 - 按可视化时间计划检查群名片，分批 @、累计提醒次数、第三次私信并生成待清理名单；
-- 根据可配置正则自动通过、拒绝或转人工处理入群申请；
+- 用可视化字段模板自动通过、拒绝或转人工处理入群申请；
 - 对广告、诈骗、辱骂等规则执行观察、撤回、禁言并记录审计日志；
 - 仅允许 QQ 白名单中的管理员执行踢人、禁言、撤回、全员禁言和改名片；
 - 被 @ 时接入智谱 API 回答群内知识问题，带冷却、长度限制和提示注入防护；
-- 定时发送公众号、公告或二维码；
+- 定时发送文字、公告、二维码或多张图片；
+- 按活动流程充当宣传主持人，依次介绍社团、协会或部门；
 - 支持多群运行、白名单群号和干运行模式；
 - 提供配置验证、运行诊断和审计汇总 CLI；
 - 附带 Codex 插件 Skill，可用自然语言配置、部署和排障。
 
-## 安装
+## 下载后快速使用（Windows）
 
-要求 Python 3.11+，以及提供 OneBot 11 反向 WebSocket 的 QQ 客户端实现。
+需要 Windows 10/11、Python 3.11+ 和一个专用 QQ 小号。
+
+1. 在 GitHub 页面点击 **Releases** 下载发布压缩包，或点击 **Code → Download ZIP** 并解压。
+2. 双击 `安装.bat`。安装向导会创建 Python 环境、安装依赖，并询问目标群号、管理员 QQ 和可选的智谱 API Key。
+3. 从 [NapCatQQ Releases](https://github.com/NapNeko/NapCatQQ/releases) 安装并登录 NapCat。按照 [NapCat 接入 NoneBot 官方说明](https://napneko.github.io/use/integration) 添加一个 WebSocket 客户端（反向 WS）：
+
+   ```text
+   ws://127.0.0.1:8080/onebot/v11/ws
+   ```
+
+4. 先启动 NapCat，再双击 `启动机器人.bat`。脚本会校验配置、后台启动机器人、等待服务就绪，并自动打开管理后台。
+5. 页面要求令牌时直接粘贴：启动脚本已经把令牌复制到了剪贴板。
+
+机器人账号必须加入目标群。自动审核、撤回、禁言和移出成员通常要求机器人具有群管理员权限。
+
+> NapCat 是独立的第三方 OneBot 实现，本仓库不捆绑 QQ 或 NapCat。NapCat 的安装方式和兼容版本请以其官方文档为准。
+
+### 手动安装
 
 ```powershell
-py -3.11 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev]"
 Copy-Item config.example.yml config.yml
 Copy-Item .env.example .env
-qq-group-assistant validate --config config.yml
-python bot.py
+.\.venv\Scripts\python qq_assistant_cli.py validate --config config.yml
+.\.venv\Scripts\python bot.py
 ```
 
-在 OneBot 客户端中把反向 WebSocket 设置为：
+然后修改 `config.yml` 中的群号和管理员 QQ，并在 `.env` 中设置至少 16 位的 `QQ_ASSISTANT_WEB_TOKEN`。OneBot 反向 WebSocket 地址仍为：
 
 ```text
 ws://127.0.0.1:8080/onebot/v11/ws
 ```
-
-机器人账号必须进入目标群。审核、撤回、禁言和踢人通常要求群管理员权限。
 
 ## 配置与运维
 
@@ -56,7 +72,11 @@ qq-group-assistant audit-summary --date 2026-08-03
 
 机器人启动后访问 `http://127.0.0.1:8080/qq-admin`。管理令牌配置在 `.env` 的 `QQ_ASSISTANT_WEB_TOKEN` 中。Windows 用户也可以运行 `scripts/open-dashboard.ps1`，脚本会把令牌复制到剪贴板并打开后台页面。
 
-后台提供详细运行概览、未改名片成员、待清理名单、立即提醒、公众号推送、群消息、禁言/解禁、成员移出和 YAML 配置校验。普通用户无需编写 cron 或 JSON：可以选择“每天按间隔”“每天指定时间”“每周指定日期”并设置时间和频率；每条推送可独立配置目标群、文案和最多 9 张图片。内容治理规则可以逐条启停并选择关键词或正则匹配，所有推送结果都会自动进入历史记录。后台默认只监听本机；不要直接暴露到公网。
+后台提供运行概览、未改名片成员、待清理名单、入群审核、定时提醒、宣传主持、内容治理、群消息和成员操作。普通用户无需编写 cron 或 JSON：可以选择“每天按间隔”“每天指定时间”“每周指定日期”，并为每条提醒配置目标群、文案和最多 9 张图片。入群审核可以自由组合字段和允许值；内容治理规则可以逐条启停并选择关键词或正则匹配；所有推送结果自动进入历史记录。
+
+项目根目录提供 `启动机器人.bat`。双击后会校验配置、后台启动机器人和网页管理系统，等待端口就绪后自动打开后台；重复双击不会重复启动已有服务。若在 `.env` 的 `NAPCAT_START_PATH` 填写 NapCat Desktop 或启动程序路径，启动器也会尝试一并启动 NapCat。
+
+“宣传主持”页面用于一次性社团、协会或部门宣传活动。管理员可设置活动日期、目标群、统一主持词，并逐行维护开始时间、结束时间、宣传部门和本环节内容。启用并保存后，机器人会在各环节开始时间自动发送主持消息；也可在明确确认后手动立即发送某一环节。
 
 首次上线建议：
 
@@ -73,8 +93,8 @@ Codex Skill 可以把“每两小时提醒未改名片成员”“只允许两�
 ## 测试
 
 ```powershell
-pytest -q
-ruff check .
+.\.venv\Scripts\python -m pytest -q
+.\.venv\Scripts\python -m ruff check .
 ```
 
 ## Codex 插件

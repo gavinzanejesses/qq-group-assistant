@@ -1,6 +1,6 @@
 {
   "name": "qq-group-manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Configure, deploy, diagnose and safely operate a OneBot QQ group assistant.",
   "author": {
     "name": "QQ Group Assistant contributors"

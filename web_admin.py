@@ -24,6 +24,7 @@ from qq_group_assistant import (
     PUSH_HISTORY_PATH,
     Config,
     JoinFieldConfig,
+    PromotionSlotConfig,
     Rule,
     ScheduleConfig,
     ScheduledPushConfig,
@@ -31,6 +32,7 @@ from qq_group_assistant import (
     configure_recurring_jobs,
     load_config,
     load_pending_removals,
+    publish_promotion_slot,
     publish_public_account_reminder,
     record_push,
     remind_primary_group_bad_remarks,
@@ -109,6 +111,14 @@ class JoinReviewUpdate(BaseModel):
     auto_reject_invalid: bool = False
     reject_reason: str = Field(min_length=1, max_length=200)
     fields: list[JoinFieldConfig] = Field(min_length=1, max_length=10)
+
+
+class PromotionUpdate(BaseModel):
+    enabled: bool
+    event_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    group_id: int | None = None
+    message_template: str = Field(min_length=1, max_length=3000)
+    slots: list[PromotionSlotConfig] = Field(max_length=100)
 
 
 def validate_cron(value: str) -> None:
@@ -322,6 +332,66 @@ async def put_join_review(
     CONFIG_PATH.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
     audit("web_admin_join_review_saved")
     return {"ok": True, "message": "入群审核设置已保存并立即生效"}
+
+
+@router.get("/api/promotion-host")
+async def get_promotion_host(x_admin_token: str = Header(default="")) -> dict[str, Any]:
+    require_token(x_admin_token)
+    host = load_config().promotion_host
+    return host.model_dump()
+
+
+@router.put("/api/promotion-host")
+async def put_promotion_host(
+    payload: PromotionUpdate,
+    x_admin_token: str = Header(default=""),
+) -> dict[str, Any]:
+    require_token(x_admin_token)
+    if payload.enabled and not payload.event_date:
+        raise HTTPException(422, "启用宣传主持前，请先选择活动日期")
+    slot_ids = [slot.id for slot in payload.slots]
+    if len(slot_ids) != len(set(slot_ids)):
+        raise HTTPException(422, "宣传环节编号重复，请刷新页面后重试")
+    for slot in payload.slots:
+        start = datetime.strptime(slot.start_time, "%H:%M")
+        end = datetime.strptime(slot.end_time, "%H:%M")
+        if end <= start:
+            raise HTTPException(422, f"“{slot.department}”的结束时间必须晚于开始时间")
+    try:
+        payload.message_template.format(
+            department="示例社团",
+            start_time="14:00",
+            end_time="14:10",
+            content="示例宣传内容",
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(422, f"主持词模板中的变量有误：{exc}") from exc
+    raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    raw["promotion_host"] = payload.model_dump(exclude_none=True)
+    validated = Config.model_validate(raw)
+    backup = CONFIG_PATH.with_suffix(".yml.bak")
+    backup.write_text(CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    CONFIG_PATH.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    configure_recurring_jobs(validated)
+    audit("web_admin_promotion_host_saved", slot_count=len(payload.slots))
+    return {"ok": True, "message": "宣传主持排期已保存并立即生效"}
+
+
+@router.post("/api/promotion-host/send/{slot_id}")
+async def send_promotion_slot_now(
+    slot_id: str,
+    x_admin_token: str = Header(default=""),
+) -> dict[str, Any]:
+    require_token(x_admin_token)
+    host = load_config().promotion_host
+    slot = next((item for item in host.slots if item.id == slot_id), None)
+    if slot is None:
+        raise HTTPException(404, "该宣传环节不存在")
+    await publish_promotion_slot(slot_id, force=True)
+    return {"ok": True, "message": f"已发送“{slot.department}”主持消息"}
 
 
 @router.put("/api/personalization")
@@ -568,23 +638,24 @@ DASHBOARD_HTML = r'''<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#edf7f1,#f8faf9 45%,#eef5f2);color:var(--ink);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}.app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}.side{background:#103e30;color:#fff;padding:28px 18px;position:sticky;top:0;height:100vh}.brand{font-size:20px;font-weight:800;margin:0 8px 28px}.brand small{display:block;font-size:11px;opacity:.65;letter-spacing:.12em;margin-top:4px}.nav button{display:block;width:100%;border:0;background:transparent;color:#dcece5;text-align:left;padding:11px 13px;border-radius:10px;margin:4px 0;cursor:pointer}.nav button.active,.nav button:hover{background:#1c5945;color:#fff}.main{padding:28px;max-width:1380px;width:100%}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}.title h1{font-size:26px;margin:0}.title p{color:var(--muted);margin:4px 0 0}.status{display:flex;gap:8px;align-items:center}.dot{width:9px;height:9px;border-radius:50%;background:#999}.dot.on{background:#23b26d;box-shadow:0 0 0 5px #dff6e9}.panel{display:none}.panel.active{display:block}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.grid.six{grid-template-columns:repeat(6,1fr)}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:var(--shadow)}.metric{font-size:30px;font-weight:800;margin:10px 0 0}.label{color:var(--muted);font-size:13px}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}.btn{border:0;border-radius:10px;padding:10px 15px;background:var(--green);color:#fff;cursor:pointer;font-weight:650}.btn.secondary{background:var(--green2);color:var(--green)}.btn.danger{background:var(--red)}input,textarea,select{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff;color:var(--ink)}textarea{min-height:360px;font:13px/1.55 ui-monospace,Consolas,monospace}.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.field{margin:12px 0}.field label{display:block;font-weight:650;margin-bottom:5px}.table{width:100%;border-collapse:collapse}.table th,.table td{text-align:left;padding:11px 8px;border-bottom:1px solid var(--line)}.table th{color:var(--muted);font-size:12px}.empty{text-align:center;color:var(--muted);padding:30px}.schedule{padding:12px;background:#f6faf8;border:1px solid var(--line);border-radius:12px}.schedule-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.weekday{display:flex;gap:8px;flex-wrap:wrap}.weekday label,.chip{background:var(--green2);color:var(--green);padding:6px 9px;border-radius:9px}.weekday input{width:auto}.image-list{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.image-list img{width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--line)}.rule-row{display:grid;grid-template-columns:70px 1.2fr 120px 2fr 80px;gap:8px;align-items:center;margin:8px 0}.toast{position:fixed;right:24px;bottom:24px;background:#173f33;color:#fff;padding:12px 16px;border-radius:10px;opacity:0;transform:translateY(8px);transition:.2s}.toast.show{opacity:1;transform:none}.login{position:fixed;inset:0;background:rgba(9,35,27,.72);display:grid;place-items:center;z-index:5}.login .card{width:min(420px,90vw)}.login.hidden{display:none}@media(max-width:1050px){.grid.six{grid-template-columns:repeat(3,1fr)}}@media(max-width:850px){.app{grid-template-columns:1fr}.side{height:auto;position:static;padding:15px}.brand{margin:0 5px 10px}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap}.main{padding:18px}.grid,.grid.six{grid-template-columns:1fr}.row,.schedule-grid,.rule-row{grid-template-columns:1fr}}
 </style></head><body>
 <div class="login" id="login"><div class="card"><h2>连接管理后台</h2><p class="label">令牌仅保存在当前浏览器会话中。</p><div class="field"><input id="tokenInput" type="password" placeholder="输入管理令牌"></div><button class="btn" onclick="login()">进入后台</button></div></div>
-<div class="app"><aside class="side"><div class="brand">群序 · QQ 管理<small>智能群管理助手</small></div><nav class="nav"><button class="active" data-panel="overview">概览</button><button data-panel="members">成员检查</button><button data-panel="pushes">定时提醒</button><button data-panel="joinReview">入群审核</button><button data-panel="rules">内容与名片</button><button data-panel="actions">群操作</button></nav></aside>
+<div class="app"><aside class="side"><div class="brand">群序 · QQ 管理<small>智能群管理助手</small></div><nav class="nav"><button class="active" data-panel="overview">概览</button><button data-panel="members">成员检查</button><button data-panel="pushes">定时提醒</button><button data-panel="promotion">宣传主持</button><button data-panel="joinReview">入群审核</button><button data-panel="rules">内容与名片</button><button data-panel="actions">群操作</button></nav></aside>
 <main class="main"><header class="top"><div class="title"><h1 id="pageTitle">运行概览</h1><p>本地、安全、可审计的群管理控制台</p></div><div class="status"><span class="dot" id="dot"></span><span id="online">检查中</span></div></header>
 <section class="panel active" id="overview"><div class="grid six"><div class="card"><div class="label">机器人状态</div><div class="metric" id="botStatus">—</div></div><div class="card"><div class="label">管理群数</div><div class="metric" id="groupCount">—</div></div><div class="card"><div class="label">主群成员</div><div class="metric" id="memberCount">—</div></div><div class="card"><div class="label">未合规名片</div><div class="metric" id="badCount">—</div></div><div class="card"><div class="label">待清理名单</div><div class="metric" id="pendingCount">—</div></div><div class="card"><div class="label">今日提醒</div><div class="metric" id="pushCount">—</div></div></div><div class="row" style="margin-top:16px"><div class="card"><h3>接下来要做的事情</h3><div id="nextJobs" class="label"></div></div><div class="card"><h3>今日运行情况</h3><div id="todayStats" class="label"></div></div></div><div class="card" style="margin-top:16px"><h3>快捷操作</h3><div class="toolbar"><button class="btn" onclick="runSimple('remind_now')">立即提醒修改名片</button><button class="btn secondary" onclick="runSimple('publish_public_account')">立即发送默认提醒</button><button class="btn secondary" onclick="refreshAll()">刷新页面数据</button></div></div></section>
 <section class="panel" id="members"><div class="card"><div class="top"><div><h3>未改群名片成员</h3><div class="label">自动跳过群主和管理员</div></div><button class="btn secondary" onclick="loadMembers()">刷新</button></div><div style="overflow:auto"><table class="table"><thead><tr><th>昵称</th><th>当前名片</th><th>QQ</th><th>操作</th></tr></thead><tbody id="memberRows"></tbody></table></div></div></section>
 <section class="panel" id="pushes"><div class="row"><div class="card"><h3>默认定时提醒</h3><div class="field"><label><input id="publicEnabled" type="checkbox" style="width:auto"> 启用这条提醒</label></div><div id="publicSchedule"></div><div class="field"><label>提醒内容</label><textarea id="publicMessage" style="min-height:150px"></textarea></div></div><div class="card"><h3>新增一条定时提醒</h3><div class="field"><label>提醒名称</label><input id="pushName" placeholder="如：每日群公告"></div><div class="field"><label>发送到哪个群（留空使用主群）</label><input id="pushGroup"></div><div id="pushSchedule"></div><div class="field"><label>提醒内容</label><textarea id="pushMessage" style="min-height:100px"></textarea></div><div class="field"><label>插入图片（最多9张，每张不超过5MB）</label><input id="pushImages" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onchange="uploadImages(this)"><div class="image-list" id="pushImageList"></div></div><button class="btn" onclick="addPush()">添加到提醒列表</button></div></div><div class="card" style="margin-top:16px"><div class="top"><div><h3>我的定时提醒</h3><div class="label">每条提醒都可以单独设置时间、群聊、文字和图片</div></div><button class="btn" onclick="savePersonalization()">保存全部提醒</button></div><div style="overflow:auto"><table class="table"><thead><tr><th>启用</th><th>名称</th><th>发送时间</th><th>群聊</th><th>内容/图片</th><th></th></tr></thead><tbody id="pushRows"></tbody></table></div></div><div class="card" style="margin-top:16px"><div class="top"><h3>发送记录</h3><button class="btn secondary" onclick="loadHistory()">刷新</button></div><div style="overflow:auto"><table class="table"><thead><tr><th>时间</th><th>提醒类型</th><th>结果</th><th>群号</th><th>内容</th></tr></thead><tbody id="historyRows"></tbody></table></div></div></section>
 <section class="panel" id="joinReview"><div class="card"><div class="top"><div><h3>自动审核入群申请</h3><div class="label">申请内容符合下面的年级、专业和姓名格式时，机器人会自动同意</div></div><label><input id="joinEnabled" type="checkbox" style="width:auto"> 启用自动审核</label></div><div class="row"><div><div class="field"><label>正确格式示例</label><input id="joinExample" placeholder="25 计科 张三"></div><div class="field"><label>允许的年级（每行一个）</label><textarea id="joinYears" style="min-height:150px" placeholder="25&#10;2025&#10;25级"></textarea></div><div class="field"><label>允许的专业简称或全称（每行一个）</label><textarea id="joinMajors" style="min-height:220px" placeholder="计科&#10;网安&#10;计算机科学与技术"></textarea></div></div><div><div class="row"><div class="field"><label>姓名最少字数</label><input id="joinNameMin" type="number" min="1" max="20"></div><div class="field"><label>姓名最多字数</label><input id="joinNameMax" type="number" min="1" max="30"></div></div><div class="field"><label>直接拒绝的词（每行一个）</label><textarea id="joinForbidden" style="min-height:130px" placeholder="广告&#10;刷单&#10;贷款"></textarea></div><div class="field"><label><input id="joinAutoReject" type="checkbox" style="width:auto"> 格式不正确时自动拒绝</label><div class="label">建议先关闭：不符合格式的申请将留给管理员人工判断，减少误拒绝。</div></div><div class="field"><label>拒绝时显示的说明</label><textarea id="joinRejectReason" style="min-height:100px"></textarea></div></div></div><div class="toolbar"><button class="btn" onclick="saveJoinReview()">保存入群审核设置</button><button class="btn secondary" onclick="previewJoinReview()">查看审核说明</button></div><div id="joinPreview" class="label"></div></div></section>
+<section class="panel" id="promotion"></section>
 <section class="panel" id="rules"><div class="row"><div class="card"><h3>名片提醒</h3><div class="field"><label><input id="remarkEnabled" type="checkbox" style="width:auto"> 启用自动提醒</label></div><div id="remarkSchedule"></div><div class="row"><div class="field"><label>同一成员冷却小时</label><input id="remarkCooldown" type="number"></div><div class="field"><label>每批 @ 人数</label><input id="remarkBatch" type="number"></div></div><div class="field"><label>格式示例</label><textarea id="remarkExample" style="min-height:90px"></textarea></div><div class="field"><label>群提醒模板</label><textarea id="remarkGroupTemplate" style="min-height:180px"></textarea><div class="label">可用变量：{current}、{total}、{mentions}、{example}，必须保留 {mentions}</div></div><div class="field"><label>第三次私信模板</label><textarea id="remarkPrivateTemplate" style="min-height:150px"></textarea></div></div><div class="card"><h3>内容治理</h3><div class="field"><label><input id="moderationEnabled" type="checkbox" style="width:auto"> 启用内容治理</label>　<label><input id="moderationDryRun" type="checkbox" style="width:auto"> 仅观察，不自动撤回</label></div><div class="field"><label>屏蔽词（每行一个，适合简单关键词）</label><textarea id="blockedWords" style="min-height:130px"></textarea></div><div class="field"><div class="top"><div><label>个性化治理规则</label><div class="label">直接选择“包含关键词”或“正则表达式”，无需填写 JSON</div></div><button class="btn secondary" onclick="addRule()">新增规则</button></div><div id="ruleRows"></div></div><div class="field"><label>允许内容（正则，每行一个）</label><textarea id="allowPatterns" style="min-height:100px"></textarea></div><button class="btn" onclick="savePersonalization()">校验并保存规则</button></div></div></section>
 <section class="panel" id="actions"><div class="row"><div class="card"><h3>发送群消息</h3><div class="field"><label>群号</label><input id="msgGroup"></div><div class="field"><label>消息内容</label><textarea id="message" style="min-height:130px"></textarea></div><button class="btn" onclick="sendMessage()">发送</button></div><div class="card"><h3>成员操作</h3><div class="field"><label>群号</label><input id="opGroup"></div><div class="field"><label>成员 QQ</label><input id="userId"></div><div class="field"><label>禁言秒数</label><input id="duration" type="number" value="600"></div><div class="toolbar"><button class="btn" onclick="memberAction('mute')">禁言</button><button class="btn secondary" onclick="memberAction('unmute')">解禁</button><button class="btn danger" onclick="memberAction('kick')">移出群聊</button></div></div></div></section>
 <section class="panel" id="config"><div class="card"><div class="top"><div><h3>YAML 配置</h3><div class="label">保存前自动校验；定时计划修改后需重启</div></div><div class="toolbar"><button class="btn secondary" onclick="loadConfig()">重新载入</button><button class="btn" onclick="saveConfig()">校验并保存</button></div></div><textarea id="yaml"></textarea></div></section>
 </main></div><div class="toast" id="toast"></div>
 <script>
-let token=sessionStorage.getItem('qqAdminToken')||'', primaryGroup='', personal=null, pendingImages=[], publicImagePaths=[], joinData=null;
+let token=sessionStorage.getItem('qqAdminToken')||'', primaryGroup='', personal=null, pendingImages=[], publicImagePaths=[], joinData=null, promotionData=null;
 const headers=()=>({'Content-Type':'application/json','X-Admin-Token':token});
 async function api(path,opts={}){const r=await fetch('/qq-admin/api/'+path,{...opts,headers:{...headers(),...(opts.headers||{})}});const data=await r.json().catch(()=>({detail:r.statusText}));if(!r.ok)throw new Error(data.detail||'请求失败');return data}
 function toast(msg,bad=false){const e=document.getElementById('toast');e.textContent=msg;e.style.background=bad?'#9f2f2f':'#173f33';e.classList.add('show');setTimeout(()=>e.classList.remove('show'),2600)}
 async function login(){token=document.getElementById('tokenInput').value.trim();sessionStorage.setItem('qqAdminToken',token);try{await refreshAll();document.getElementById('login').classList.add('hidden')}catch(e){toast(e.message,true)}}
-async function refreshAll(){const s=await api('status');primaryGroup=s.primary_group;msgGroup.value=primaryGroup;opGroup.value=primaryGroup;botStatus.textContent=s.online?'在线':'离线';online.textContent=s.online?'机器人在线':'机器人离线';dot.className='dot '+(s.online?'on':'');const [m,p,o]=await Promise.all([api('noncompliant?group_id='+primaryGroup),api('pending'),api('overview')]);badCount.textContent=o.noncompliant_count;pendingCount.textContent=o.pending_count;groupCount.textContent=o.group_count;memberCount.textContent=o.member_count;pushCount.textContent=o.pushes_today;const jobName=id=>id.startsWith('remark_reminder')?'检查群名片':id.startsWith('public_account_reminder')?'发送默认提醒':'发送自定义提醒';nextJobs.innerHTML=o.next_jobs.length?o.next_jobs.map(x=>`<div>⏱ ${jobName(x.id)}<br><small>${esc((x.next_run||'等待安排').replace('T',' ').slice(0,19))}</small></div>`).join('<hr>'):'暂时没有自动任务';todayStats.innerHTML=`提醒发送失败：${o.push_failures_today}<br>不当内容处理：${o.moderation_hits_today}<br>自动同意入群：${o.join_approved_today}<br>等待人工审核：${o.join_pending_today}`;renderMembers(m)}
+async function refreshAll(){const s=await api('status');primaryGroup=s.primary_group;msgGroup.value=primaryGroup;opGroup.value=primaryGroup;botStatus.textContent=s.online?'在线':'离线';online.textContent=s.online?'机器人在线':'机器人离线';dot.className='dot '+(s.online?'on':'');const [m,p,o]=await Promise.all([api('noncompliant?group_id='+primaryGroup),api('pending'),api('overview')]);badCount.textContent=o.noncompliant_count;pendingCount.textContent=o.pending_count;groupCount.textContent=o.group_count;memberCount.textContent=o.member_count;pushCount.textContent=o.pushes_today;const jobName=id=>id.startsWith('remark_reminder')?'检查群名片':id.startsWith('public_account_reminder')?'发送默认提醒':id.startsWith('promotion_host_')?'宣传活动主持':'发送自定义提醒';nextJobs.innerHTML=o.next_jobs.length?o.next_jobs.map(x=>`<div>⏱ ${jobName(x.id)}<br><small>${esc((x.next_run||'等待安排').replace('T',' ').slice(0,19))}</small></div>`).join('<hr>'):'暂时没有自动任务';todayStats.innerHTML=`提醒发送失败：${o.push_failures_today}<br>不当内容处理：${o.moderation_hits_today}<br>自动同意入群：${o.join_approved_today}<br>等待人工审核：${o.join_pending_today}`;renderMembers(m)}
 function renderMembers(items){const b=document.getElementById('memberRows');b.innerHTML=items.length?items.map(x=>`<tr><td>${esc(x.nickname)}</td><td>${esc(x.card||'未设置')}</td><td>${x.user_id}</td><td><button class="btn danger" onclick="kick(${x.user_id})">移出</button></td></tr>`).join(''):'<tr><td colspan="4" class="empty">当前没有未合规成员</td></tr>'}
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function loadMembers(){try{renderMembers(await api('noncompliant?group_id='+primaryGroup))}catch(e){toast(e.message,true)}}
@@ -619,6 +690,14 @@ function moveJoinField(i,d){const n=i+d;if(n<0||n>=joinData.fields.length)return
 async function loadJoinReview(){try{joinData=await api('join-review');ensureJoinEditor();joinEnabled.checked=joinData.enabled;joinForbidden.value=joinData.forbidden_words.join('\n');joinAutoReject.checked=joinData.auto_reject_invalid;joinRejectReason.value=joinData.reject_reason;renderJoinFields();previewJoinReview()}catch(e){toast(e.message,true)}}
 function previewJoinReview(){if(!joinData)return;const example=joinData.fields.map(f=>f.example||f.name).join(' ＋ '),details=joinData.fields.map(f=>`${f.name}：${f.kind==='options'?'可填写 '+(f.options||[]).join('、'):f.kind==='number'?'填写数字':f.kind==='chinese'?'填写中文':'填写文字'}`).join('；');joinPreview.innerHTML=`<b>符合条件的格式：</b>${esc(example||'请先添加项目')}<br><span class="label">${esc(details)}</span>`}
 async function saveJoinReview(){try{const lines=id=>document.getElementById(id).value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),body={enabled:joinEnabled.checked,fields:joinData.fields,forbidden_words:lines('joinForbidden'),auto_reject_invalid:joinAutoReject.checked,reject_reason:joinRejectReason.value};const d=await api('join-review',{method:'PUT',body:JSON.stringify(body)});toast(d.message);loadJoinReview()}catch(e){toast(e.message,true)}}
-document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button,.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.panel).classList.add('active');document.getElementById('pageTitle').textContent=b.textContent;if(b.dataset.panel==='members')loadMembers();if(['pushes','rules'].includes(b.dataset.panel))loadPersonalization();if(b.dataset.panel==='pushes')loadHistory();if(b.dataset.panel==='joinReview')loadJoinReview()});
+function ensurePromotionEditor(){promotion.innerHTML=`<div class="card"><div class="top"><div><h3>社团宣传主持</h3><div class="label">机器人会在每个环节的开始时间自动介绍当前宣传部门。</div></div><label><input id="promotionEnabled" type="checkbox" style="width:auto"> 启用本次活动</label></div><div class="row"><div class="field"><label>活动日期</label><input id="promotionDate" type="date"></div><div class="field"><label>发送群号（留空使用主群）</label><input id="promotionGroup" inputmode="numeric" placeholder="使用主群"></div></div><div class="field"><label>统一主持词模板</label><textarea id="promotionTemplate" style="min-height:120px"></textarea><div class="label">可用内容：{department} 社团名称、{start_time} 开始时间、{end_time} 结束时间、{content} 本环节内容。</div></div><div class="top"><div><h3>活动流程</h3><div class="label">已根据图片录入 14:00—18:10 的排期，时间、名称和内容均可修改。</div></div><button class="btn secondary" onclick="addPromotionSlot()">新增环节</button></div><div style="overflow:auto"><table class="table"><thead><tr><th>开始</th><th>结束</th><th>宣传部门/社团</th><th>主持内容</th><th>操作</th></tr></thead><tbody id="promotionRows"></tbody></table></div><div class="toolbar"><button class="btn" onclick="savePromotion()">保存并启用排期</button><button class="btn secondary" onclick="previewPromotion()">预览主持词</button></div><div id="promotionPreview" class="schedule"></div></div>`}
+function renderPromotionRows(){promotionRows.innerHTML=promotionData.slots.length?promotionData.slots.map((s,i)=>`<tr><td><input type="time" value="${s.start_time}" onchange="promotionData.slots[${i}].start_time=this.value"></td><td><input type="time" value="${s.end_time}" onchange="promotionData.slots[${i}].end_time=this.value"></td><td><input value="${esc(s.department)}" oninput="promotionData.slots[${i}].department=this.value"></td><td><textarea style="min-height:75px" oninput="promotionData.slots[${i}].content=this.value">${esc(s.content||'')}</textarea></td><td><button class="btn secondary" onclick="sendPromotionNow(${i})">立即发送</button> <button class="btn danger" onclick="promotionData.slots.splice(${i},1);renderPromotionRows()">删除</button></td></tr>`).join(''):'<tr><td colspan="5" class="empty">还没有宣传环节</td></tr>'}
+function addMinutes(value,minutes){const [h,m]=(value||'14:00').split(':').map(Number),d=new Date(2000,0,1,h,m+minutes);return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`}
+function addPromotionSlot(){const last=promotionData.slots.at(-1),start=last?.end_time||'14:00';promotionData.slots.push({id:'slot_'+Date.now(),start_time:start,end_time:addMinutes(start,10),department:'新宣传部门',content:'请负责人进行宣传介绍。'});renderPromotionRows()}
+async function loadPromotion(){try{promotionData=await api('promotion-host');ensurePromotionEditor();promotionEnabled.checked=promotionData.enabled;promotionDate.value=promotionData.event_date||'';promotionGroup.value=promotionData.group_id||'';promotionTemplate.value=promotionData.message_template;renderPromotionRows();previewPromotion()}catch(e){toast(e.message,true)}}
+function previewPromotion(){if(!promotionData||!promotionData.slots.length){promotionPreview.textContent='请先添加一个宣传环节';return}const s=promotionData.slots[0],tpl=promotionTemplate.value;promotionPreview.innerHTML='<b>首个环节预览：</b><br>'+esc(tpl.replaceAll('{department}',s.department).replaceAll('{start_time}',s.start_time).replaceAll('{end_time}',s.end_time).replaceAll('{content}',s.content||'' )).replace(/\n/g,'<br>')}
+async function savePromotion(){try{promotionData.enabled=promotionEnabled.checked;promotionData.event_date=promotionDate.value||null;promotionData.group_id=promotionGroup.value?Number(promotionGroup.value):null;promotionData.message_template=promotionTemplate.value;const d=await api('promotion-host',{method:'PUT',body:JSON.stringify(promotionData)});toast(d.message);await loadPromotion();refreshAll()}catch(e){toast(e.message,true)}}
+async function sendPromotionNow(i){const s=promotionData.slots[i];if(!confirm(`确定立即向群里发送“${s.department}”的主持消息吗？`))return;try{await savePromotion();const d=await api('promotion-host/send/'+encodeURIComponent(s.id),{method:'POST'});toast(d.message)}catch(e){toast(e.message,true)}}
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button,.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.panel).classList.add('active');document.getElementById('pageTitle').textContent=b.textContent;if(b.dataset.panel==='members')loadMembers();if(['pushes','rules'].includes(b.dataset.panel))loadPersonalization();if(b.dataset.panel==='pushes')loadHistory();if(b.dataset.panel==='joinReview')loadJoinReview();if(b.dataset.panel==='promotion')loadPromotion()});
 if(token){refreshAll().then(()=>document.getElementById('login').classList.add('hidden')).catch(()=>{})}
 </script></body></html>'''

@@ -23,7 +23,7 @@ from nonebot.adapters.onebot.v11 import (
 from nonebot.exception import IgnoredException
 from nonebot.message import event_preprocessor
 from nonebot_plugin_apscheduler import scheduler
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env", override=False)
@@ -201,6 +201,47 @@ class ScheduledPushConfig(BaseModel):
     image_paths: list[str] = Field(default_factory=list, max_length=9)
 
 
+class PromotionSlotConfig(BaseModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,50}$")
+    start_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    end_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    department: str = Field(min_length=1, max_length=100)
+    content: str = Field(default="", max_length=2000)
+
+
+class PromotionHostConfig(BaseModel):
+    enabled: bool = False
+    event_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    group_id: int | None = None
+    message_template: str = (
+        "现在进入【{department}】的宣传时间（{start_time}—{end_time}）。\n"
+        "{content}\n请相关负责人开始介绍，感兴趣的同学可以留意并积极交流。"
+    )
+    slots: list[PromotionSlotConfig] = []
+
+    @model_validator(mode="after")
+    def validate_host_schedule(self) -> PromotionHostConfig:
+        if self.enabled and not self.event_date:
+            raise ValueError("启用宣传主持前必须设置活动日期")
+        if self.event_date:
+            datetime.strptime(self.event_date, "%Y-%m-%d")
+        slot_ids = [slot.id for slot in self.slots]
+        if len(slot_ids) != len(set(slot_ids)):
+            raise ValueError("宣传主持环节编号不能重复")
+        for slot in self.slots:
+            if datetime.strptime(slot.end_time, "%H:%M") <= datetime.strptime(
+                slot.start_time, "%H:%M"
+            ):
+                raise ValueError(f"{slot.department}的结束时间必须晚于开始时间")
+        self.message_template.format(
+            department="示例社团",
+            start_time="14:00",
+            end_time="14:10",
+            content="示例内容",
+        )
+        return self
+
+
 class Config(BaseModel):
     group_id: int
     all_groups: bool = False
@@ -213,6 +254,7 @@ class Config(BaseModel):
     join_review: JoinReviewConfig = JoinReviewConfig()
     moderation: ModerationConfig = ModerationConfig()
     scheduled_pushes: list[ScheduledPushConfig] = []
+    promotion_host: PromotionHostConfig = PromotionHostConfig()
 
 
 def load_config() -> Config:
@@ -1498,6 +1540,51 @@ async def publish_scheduled_push(push_id: str) -> None:
         record_push("custom", "failed", group_id, push.message, push_id=push_id, name=push.name, error=repr(exc))
 
 
+async def publish_promotion_slot(slot_id: str, force: bool = False) -> None:
+    cfg = load_config()
+    host = cfg.promotion_host
+    slot = next((item for item in host.slots if item.id == slot_id), None)
+    if (not host.enabled and not force) or slot is None:
+        return
+    group_id = host.group_id or cfg.group_id
+    bots = list(get_driver().bots.values())
+    if not bots:
+        audit("promotion_slot_skipped", slot_id=slot_id, reason="bot_offline")
+        record_push("promotion", "skipped", group_id, slot.content, department=slot.department)
+        return
+    try:
+        message = host.message_template.format(
+            department=slot.department,
+            start_time=slot.start_time,
+            end_time=slot.end_time,
+            content=slot.content,
+        ).strip()
+        await bots[0].send_group_msg(group_id=group_id, message=message)
+        audit(
+            "promotion_slot_published",
+            slot_id=slot_id,
+            department=slot.department,
+            group_id=group_id,
+        )
+        record_push(
+            "promotion",
+            "success",
+            group_id,
+            message,
+            department=slot.department,
+        )
+    except Exception as exc:
+        audit("promotion_slot_failed", slot_id=slot_id, error=repr(exc))
+        record_push(
+            "promotion",
+            "failed",
+            group_id,
+            slot.content,
+            department=slot.department,
+            error=repr(exc),
+        )
+
+
 def add_cron_job(function: Any, cron: str, job_id: str, *, args: list[Any] | None = None) -> None:
     minute, hour, day, month, day_of_week = cron.split()
     scheduler.add_job(
@@ -1524,6 +1611,7 @@ def configure_recurring_jobs(cfg: Config) -> None:
             or job.id.startswith("public_account_reminder_")
             or job.id.startswith("activity_ranking_")
             or job.id.startswith("scheduled_push_")
+            or job.id.startswith("promotion_host_")
         ):
             scheduler.remove_job(job.id)
     if cfg.remark.enabled:
@@ -1555,6 +1643,23 @@ def configure_recurring_jobs(cfg: Config) -> None:
                     cron,
                     f"scheduled_push_{push.id}_{index}",
                     args=[push.id],
+                )
+    host = cfg.promotion_host
+    if host.enabled and host.event_date:
+        now = datetime.now().astimezone()
+        for slot in host.slots:
+            run_at = datetime.fromisoformat(
+                f"{host.event_date}T{slot.start_time}:00"
+            ).astimezone()
+            if run_at > now:
+                scheduler.add_job(
+                    publish_promotion_slot,
+                    "date",
+                    run_date=run_at,
+                    id=f"promotion_host_{slot.id}",
+                    args=[slot.id],
+                    replace_existing=True,
+                    misfire_grace_time=120,
                 )
 
 

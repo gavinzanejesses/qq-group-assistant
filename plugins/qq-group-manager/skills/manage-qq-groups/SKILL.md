@@ -20,7 +20,7 @@ Read [references/configuration.md](references/configuration.md) when editing pol
 
 Map concrete requirements into narrowly scoped configuration:
 
-- reminder cadence and quiet hours -> `remark.cron` and `remark.remind_cooldown_hours`;
+- reminder cadence and quiet hours -> visual `schedule` fields and `remark.remind_cooldown_hours`;
 - accepted card formats -> `remark.pattern` and `remark.example`;
 - application decisions -> `join_review.deny_patterns` and `approve_patterns`;
 - message governance -> `moderation.rules`, `allow_patterns`, and `dry_run`;
@@ -29,6 +29,7 @@ Map concrete requirements into narrowly scoped configuration:
 - question answering -> `ai_qa` plus a verified `knowledge.md`;
 - announcements -> `public_account_reminder`.
 - multiple personalized announcements -> `scheduled_pushes`;
+- one-time club or department events -> `promotion_host`, with an event date, host template, and ordered slots;
 - simple blocked terms -> `moderation.blocked_words`, with regex rules for advanced matching;
 - reminder wording -> `remark.group_message_template` and `private_message_template`.
 

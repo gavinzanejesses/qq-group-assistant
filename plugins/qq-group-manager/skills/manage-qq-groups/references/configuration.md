@@ -15,9 +15,11 @@
 
 ## Scheduling
 
-Use five-field cron expressions in the machine timezone. Encode quiet hours in the hour field, for example `0 8-20/2 * * *`. Validate after every edit and remember that a sleeping computer cannot execute local schedules.
+Prefer the visual schedule model (`daily_interval`, `daily_times`, or `weekly`) in the web console. Legacy five-field cron values remain for compatibility. Validate after every edit and remember that a sleeping computer cannot execute local schedules.
 
 Each item in `scheduled_pushes` needs a unique ID, display name, cron schedule, message, and optional group ID. Successful, failed, skipped, manual, remark, and public-account pushes are appended to `data/push_history.jsonl`.
+
+Use `promotion_host` for a one-time event with an ordered timetable. Keep it disabled until the event date, destination group, template, and all slots are reviewed. Each slot has start/end times, a department name, and custom content. The shared template supports `{department}`, `{start_time}`, `{end_time}`, and `{content}`. Do not test the manual-send action against a real group.
 
 Remark templates support `{current}`, `{total}`, `{mentions}`, and `{example}` in group messages, and `{total}` plus `{example}` in private messages. Keep `{mentions}` in the group template so targeted members are actually mentioned.
 

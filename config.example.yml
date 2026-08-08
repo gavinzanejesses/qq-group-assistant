@@ -131,3 +131,19 @@ scheduled_pushes:
       times: ["10:00", "16:00"]
     group_id: 123456789
     message: "欢迎新同学，请先阅读群公告并按要求修改群名片。"
+
+# 一次性活动主持排期。选择日期并启用后，每个环节在开始时间自动发送。
+promotion_host:
+  enabled: false
+  event_date: null
+  group_id: null
+  message_template: |-
+    现在进入【{department}】的宣传时间（{start_time}—{end_time}）。
+    {content}
+    请相关负责人开始介绍，感兴趣的同学可以留意并积极交流。
+  slots:
+    - id: slot_1400
+      start_time: "14:00"
+      end_time: "14:10"
+      department: "示例协会"
+      content: "请示例协会负责人进行宣传介绍。"

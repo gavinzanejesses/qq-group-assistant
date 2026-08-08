@@ -29,3 +29,12 @@ def test_remark_template_requires_mentions(tmp_path: Path) -> None:
     path = tmp_path / "config.yml"
     path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
     assert any("必须包含 {mentions}" in error for error in validate_config(path))
+
+
+def test_promotion_slot_end_must_follow_start(tmp_path: Path) -> None:
+    config = yaml.safe_load((ROOT / "config.example.yml").read_text(encoding="utf-8"))
+    config["promotion_host"]["slots"][0]["start_time"] = "14:10"
+    config["promotion_host"]["slots"][0]["end_time"] = "14:00"
+    path = tmp_path / "config.yml"
+    path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+    assert any("结束时间必须晚于开始时间" in error for error in validate_config(path))

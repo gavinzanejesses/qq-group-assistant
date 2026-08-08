@@ -6,6 +6,7 @@ import os
 import re
 import socket
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,39 @@ def validate_config(path: Path) -> list[str]:
             errors.append("remark.group_message_template 必须包含 {mentions}")
     except (KeyError, ValueError) as exc:
         errors.append(f"名片提醒模板变量无效: {exc}")
+    promotion = config.get("promotion_host", {})
+    if promotion.get("enabled") and not promotion.get("event_date"):
+        errors.append("启用宣传主持前必须设置活动日期")
+    event_date = promotion.get("event_date")
+    if event_date:
+        try:
+            datetime.strptime(event_date, "%Y-%m-%d")
+        except (TypeError, ValueError):
+            errors.append("promotion_host.event_date 必须是有效的 YYYY-MM-DD 日期")
+    slot_ids: list[str] = []
+    for index, slot in enumerate(promotion.get("slots", [])):
+        if not isinstance(slot, dict):
+            errors.append(f"promotion_host.slots[{index}] 必须是对象")
+            continue
+        slot_ids.append(str(slot.get("id", "")))
+        try:
+            start = datetime.strptime(str(slot.get("start_time", "")), "%H:%M")
+            end = datetime.strptime(str(slot.get("end_time", "")), "%H:%M")
+            if end <= start:
+                errors.append(f"promotion_host.slots[{index}] 结束时间必须晚于开始时间")
+        except ValueError:
+            errors.append(f"promotion_host.slots[{index}] 时间必须使用 HH:MM 格式")
+    if len(slot_ids) != len(set(slot_ids)):
+        errors.append("promotion_host.slots 的 id 不能重复")
+    try:
+        promotion.get("message_template", "{department}{content}").format(
+            department="示例社团",
+            start_time="14:00",
+            end_time="14:10",
+            content="示例内容",
+        )
+    except (KeyError, ValueError) as exc:
+        errors.append(f"宣传主持模板变量无效: {exc}")
     return errors
 
 
