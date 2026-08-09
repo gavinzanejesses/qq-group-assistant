@@ -67,15 +67,40 @@ if (-not (Test-Path -LiteralPath $envPath)) {
     [IO.File]::WriteAllText($envPath, $envText, $utf8)
 }
 
+if (-not $NoPause) {
+    $napCatLine = Get-Content -LiteralPath $envPath |
+        Where-Object { $_ -match '^NAPCAT_START_PATH=' } |
+        Select-Object -Last 1
+    $currentNapCatPath = if ($napCatLine) {
+        $napCatLine.Substring("NAPCAT_START_PATH=".Length).Trim().Trim('"')
+    } else { "" }
+    if (-not $currentNapCatPath -or -not (Test-Path -LiteralPath $currentNapCatPath -PathType Leaf)) {
+        Write-Host "为了让一键启动同时打开 QQ/NapCat，请选择 NapCat 启动脚本。" -ForegroundColor Yellow
+        $napCatPath = (Read-Host "NapCat launcher-user.bat 完整路径（尚未安装可按 Enter 跳过）").Trim().Trim('"')
+        while ($napCatPath -and -not (Test-Path -LiteralPath $napCatPath -PathType Leaf)) {
+            $napCatPath = (Read-Host "路径无效，请重新输入；按 Enter 暂时跳过").Trim().Trim('"')
+        }
+        if ($napCatPath) {
+            $envText = [IO.File]::ReadAllText($envPath, $utf8)
+            if ($envText -match '(?m)^NAPCAT_START_PATH=.*$') {
+                $envText = [Regex]::Replace($envText, '(?m)^NAPCAT_START_PATH=.*$', "NAPCAT_START_PATH=$napCatPath")
+            } else {
+                $envText = $envText.TrimEnd() + [Environment]::NewLine + "NAPCAT_START_PATH=$napCatPath" + [Environment]::NewLine
+            }
+            [IO.File]::WriteAllText($envPath, $envText, $utf8)
+        }
+    }
+}
+
 Write-Host "[4/4] Validating configuration..."
 & $venvPython (Join-Path $projectRoot "qq_assistant_cli.py") validate --config $configPath
 if ($LASTEXITCODE -ne 0) { throw "Configuration validation failed." }
 
 Write-Host "Installation completed." -ForegroundColor Green
-Write-Host "Next: install and start NapCat, then configure Reverse WebSocket:"
+Write-Host "NapCat must enable this Reverse WebSocket address:"
 Write-Host "ws://127.0.0.1:8080/onebot/v11/ws" -ForegroundColor Yellow
 Write-Host "NapCat releases: https://github.com/NapNeko/NapCatQQ/releases"
-Write-Host "After NapCat is ready, double-click: 启动机器人.bat"
+Write-Host "After NapCat is configured, double-click 启动机器人.bat; it will start both services and verify QQ online status."
 if (-not $NoPause) {
     Read-Host "Press Enter to close"
 }

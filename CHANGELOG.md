@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 - 2026-08-09
+
+- Fixed one-click startup opening the dashboard while leaving NapCat offline.
+- Added NapCat launcher-path setup to the Windows installer.
+- Added automatic quick-login account discovery from existing NapCat OneBot configuration.
+- Added an online-state check so startup no longer reports success before QQ connects.
+
 ## 0.3.0 - 2026-08-08
 
 - Added Windows guided installation and portable one-click startup.
