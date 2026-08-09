@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 - 2026-08-09
+
+- Added bulk text import for promotion-host schedules.
+- Added flexible parsing for time ranges, whitespace-separated times, and default ten-minute slots.
+- Added import preview plus replace/append controls before saving a schedule.
+
 ## 0.3.1 - 2026-08-09
 
 - Fixed one-click startup opening the dashboard while leaving NapCat offline.

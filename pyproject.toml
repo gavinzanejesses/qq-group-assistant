@@ -1,6 +1,6 @@
 [project]
 name = "qq-group-assistant"
-version = "0.3.1"
+version = "0.4.0"
 description = "Configurable QQ group administration assistant over OneBot 11"
 requires-python = ">=3.11"
 dependencies = [
