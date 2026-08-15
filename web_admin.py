@@ -18,9 +18,11 @@ from nonebot.adapters.onebot.v11 import Bot
 from nonebot_plugin_apscheduler import scheduler
 from pydantic import BaseModel, Field
 
+from join_roster import load_roster, match_roster_class, parse_roster_xlsx, save_roster
 from qq_group_assistant import (
     AUDIT_PATH,
     CONFIG_PATH,
+    JOIN_ROSTER_PATH,
     PUSH_HISTORY_PATH,
     Config,
     JoinFieldConfig,
@@ -107,6 +109,7 @@ class PersonalizationUpdate(BaseModel):
 
 class JoinReviewUpdate(BaseModel):
     enabled: bool
+    roster_enabled: bool = False
     forbidden_words: list[str] = Field(max_length=100)
     auto_reject_invalid: bool = False
     reject_reason: str = Field(min_length=1, max_length=200)
@@ -292,6 +295,7 @@ async def get_join_review(x_admin_token: str = Header(default="")) -> dict[str, 
     review = load_config().join_review
     return {
         "enabled": review.enabled,
+        "roster_enabled": review.roster_enabled,
         "format_example": " ＋ ".join(field.example for field in review.fields)
         if review.fields
         else review.format_example,
@@ -317,6 +321,7 @@ async def put_join_review(
     raw["join_review"].update(
         {
             "enabled": payload.enabled,
+            "roster_enabled": payload.roster_enabled,
             "format_example": " ＋ ".join(field.example for field in payload.fields),
             "forbidden_words": sorted(
                 {item.strip() for item in payload.forbidden_words if item.strip()}
@@ -332,6 +337,98 @@ async def put_join_review(
     CONFIG_PATH.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
     audit("web_admin_join_review_saved")
     return {"ok": True, "message": "入群审核设置已保存并立即生效"}
+
+
+@router.get("/api/join-roster")
+async def get_join_roster(x_admin_token: str = Header(default="")) -> dict[str, Any]:
+    require_token(x_admin_token)
+    roster = load_roster(JOIN_ROSTER_PATH)
+    mappings: list[dict[str, Any]] = []
+    try:
+        groups = await current_bot().get_group_list(no_cache=True)
+    except HTTPException:
+        groups = []
+    for group in groups:
+        group_name = str(group.get("group_name", ""))
+        class_name = match_roster_class(roster, group_name)
+        class_group_hint = re.search(
+            r"(?:计科|信安|智能|计算机科学与技术|信息安全|人工智能)\s*\d+\s*班",
+            group_name,
+        )
+        if class_name or class_group_hint:
+            mappings.append(
+                {
+                    "group_id": int(group["group_id"]),
+                    "group_name": group_name,
+                    "class_name": class_name,
+                    "matched": class_name is not None,
+                }
+            )
+    return {
+        "source": roster.get("source", ""),
+        "imported_at": roster.get("imported_at", ""),
+        "student_count": len(roster.get("students", [])),
+        "classes": roster.get("classes", {}),
+        "groups": mappings,
+    }
+
+
+@router.post("/api/join-roster/import")
+async def import_join_roster(
+    roster_file: UploadFile = File(...),
+    x_admin_token: str = Header(default=""),
+) -> dict[str, Any]:
+    require_token(x_admin_token)
+    filename = roster_file.filename or "roster.xlsx"
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(422, "请选择 XLSX 格式的新生名单")
+    content = await roster_file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(413, "名单文件不能超过20MB")
+    try:
+        students = parse_roster_xlsx(content)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    roster = save_roster(JOIN_ROSTER_PATH, students, filename)
+    audit(
+        "join_roster_imported",
+        student_count=len(students),
+        class_count=len(roster["classes"]),
+        source=roster["source"],
+    )
+    return {
+        "ok": True,
+        "message": f"已导入{len(students)}名新生、{len(roster['classes'])}个班级",
+    }
+
+
+@router.get("/api/join-roster/history")
+async def get_join_roster_history(x_admin_token: str = Header(default="")) -> list[dict[str, Any]]:
+    require_token(x_admin_token)
+    records: list[dict[str, Any]] = []
+    if AUDIT_PATH.exists():
+        for line in AUDIT_PATH.read_text(encoding="utf-8").splitlines()[-1000:]:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not str(row.get("action", "")).startswith("join_"):
+                continue
+            records.append(
+                {
+                    key: row.get(key)
+                    for key in (
+                        "time",
+                        "action",
+                        "group_id",
+                        "user_id",
+                        "class_name",
+                        "student_id",
+                        "reason",
+                    )
+                }
+            )
+    return list(reversed(records[-100:]))
 
 
 @router.get("/api/promotion-host")
@@ -683,13 +780,15 @@ function renderRules(){ruleRows.innerHTML=(personal.moderation_rules||[]).map((r
 function addRule(){personal.moderation_rules.push({name:'新规则',enabled:true,match_type:'contains',value:'',pattern:''});renderRules()}
 async function savePersonalization(){try{const body={remark_enabled:remarkEnabled.checked,remark_cron:'0 0 * * *',remark_schedule:readSchedule('remark'),remark_cooldown_hours:Number(remarkCooldown.value),remark_batch_size:Number(remarkBatch.value),remark_example:remarkExample.value,remark_group_template:remarkGroupTemplate.value,remark_private_template:remarkPrivateTemplate.value,public_enabled:publicEnabled.checked,public_cron:'0 0 * * *',public_schedule:readSchedule('public'),public_message:publicMessage.value,public_image_paths:publicImagePaths,moderation_enabled:moderationEnabled.checked,moderation_dry_run:moderationDryRun.checked,blocked_words:blockedWords.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),moderation_rules:personal.moderation_rules,allow_patterns:allowPatterns.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),scheduled_pushes:personal.scheduled_pushes};const d=await api('personalization',{method:'PUT',body:JSON.stringify(body)});toast(d.message);await loadPersonalization();refreshAll()}catch(e){toast(e.message,true)}}
 async function loadHistory(){try{const rows=await api('push-history?limit=100'),typeName=x=>x==='public_account'?'默认提醒':x==='remark'?'名片提醒':'自定义提醒',statusName=x=>x==='success'?'发送成功':x==='failed'?'发送失败':x;historyRows.innerHTML=rows.length?rows.map(x=>`<tr><td>${esc(x.time.replace('T',' ').slice(0,19))}</td><td>${typeName(x.type)}</td><td>${statusName(x.status)}</td><td>${x.group_id}</td><td title="${esc(x.content)}">${esc(x.content.slice(0,60))}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">暂无发送记录</td></tr>'}catch(e){toast(e.message,true)}}
-function ensureJoinEditor(){joinReview.innerHTML=`<div class="card"><div class="top"><div><h3>自动审核入群申请</h3><div class="label">按顺序添加需要申请人填写的内容，适用于学校、社团、公司、兴趣群等不同场景。</div></div><label><input id="joinEnabled" type="checkbox" style="width:auto"> 启用自动审核</label></div><div class="top"><div><h3>申请格式</h3><div class="label">每一项就是申请人需要填写的一段内容。</div></div><button class="btn secondary" onclick="addJoinField()">添加一项</button></div><div id="joinFieldRows"></div><div class="row"><div class="field"><label>直接拒绝的词（每行一个）</label><textarea id="joinForbidden" style="min-height:130px"></textarea></div><div><div class="field"><label><input id="joinAutoReject" type="checkbox" style="width:auto"> 格式不正确时自动拒绝</label><div class="label">关闭时，不符合格式的申请会留给管理员判断。</div></div><div class="field"><label>拒绝时显示的说明</label><textarea id="joinRejectReason" style="min-height:100px"></textarea></div></div></div><div class="toolbar"><button class="btn" onclick="saveJoinReview()">保存入群审核设置</button><button class="btn secondary" onclick="previewJoinReview()">更新格式预览</button></div><div id="joinPreview" class="schedule"></div></div>`}
+function ensureJoinEditor(){joinReview.innerHTML=`<div class="card"><div class="top"><div><h3>新生名单白名单审核</h3><div class="label">机器人按群名称识别班级；只有姓名、学号和目标班级名单全部一致才会自动同意。</div></div><label><input id="joinRosterEnabled" type="checkbox" style="width:auto"> 启用名单审核</label></div><div class="row"><div><div class="field"><label>导入新生名单（XLSX）</label><input id="joinRosterFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div class="toolbar"><button class="btn" onclick="uploadJoinRoster()">导入并替换名单</button><button class="btn secondary" onclick="loadJoinRoster()">刷新匹配状态</button></div><div id="joinRosterSummary" class="schedule">正在读取名单信息……</div></div><div><h3>班群匹配状态</h3><div style="overflow:auto"><table class="table"><thead><tr><th>群聊</th><th>群号</th><th>匹配班级</th><th>状态</th></tr></thead><tbody id="joinRosterGroups"></tbody></table></div></div></div><div style="margin-top:18px"><h3>最近审核记录</h3><div class="label">学号只显示后四位；不匹配申请会保留给管理员处理，不会自动拒绝。</div><div style="overflow:auto"><table class="table"><thead><tr><th>时间</th><th>班级</th><th>结果</th><th>学号</th><th>说明</th></tr></thead><tbody id="joinRosterHistory"></tbody></table></div></div></div><div class="card" style="margin-top:16px"><div class="top"><div><h3>通用入群审核</h3><div class="label">名单未覆盖的其他群仍可按自定义格式审核。</div></div><label><input id="joinEnabled" type="checkbox" style="width:auto"> 启用自动审核</label></div><div class="top"><div><h3>申请格式</h3><div class="label">每一项就是申请人需要填写的一段内容。</div></div><button class="btn secondary" onclick="addJoinField()">添加一项</button></div><div id="joinFieldRows"></div><div class="row"><div class="field"><label>直接拒绝的词（每行一个）</label><textarea id="joinForbidden" style="min-height:130px"></textarea></div><div><div class="field"><label><input id="joinAutoReject" type="checkbox" style="width:auto"> 格式不正确时自动拒绝</label><div class="label">关闭时，不符合格式的申请会留给管理员判断。</div></div><div class="field"><label>拒绝时显示的说明</label><textarea id="joinRejectReason" style="min-height:100px"></textarea></div></div></div><div class="toolbar"><button class="btn" onclick="saveJoinReview()">保存入群审核设置</button><button class="btn secondary" onclick="previewJoinReview()">更新格式预览</button></div><div id="joinPreview" class="schedule"></div></div>`}
 function renderJoinFields(){joinFieldRows.innerHTML=joinData.fields.map((f,i)=>`<div class="schedule" style="margin:12px 0"><div class="top"><b>第 ${i+1} 项</b><div><button class="btn secondary" onclick="moveJoinField(${i},-1)">上移</button> <button class="btn secondary" onclick="moveJoinField(${i},1)">下移</button> <button class="btn danger" onclick="joinData.fields.splice(${i},1);renderJoinFields();previewJoinReview()">删除</button></div></div><div class="schedule-grid"><div><label>项目名称</label><input value="${esc(f.name)}" oninput="joinData.fields[${i}].name=this.value;previewJoinReview()"></div><div><label>检查方式</label><select onchange="joinData.fields[${i}].kind=this.value;renderJoinFields();previewJoinReview()"><option value="text" ${f.kind==='text'?'selected':''}>任意文字</option><option value="options" ${f.kind==='options'?'selected':''}>只能从允许值中选择</option><option value="number" ${f.kind==='number'?'selected':''}>只能填写数字</option><option value="chinese" ${f.kind==='chinese'?'selected':''}>只能填写中文</option></select></div><div><label>合格示例</label><input value="${esc(f.example)}" oninput="joinData.fields[${i}].example=this.value;previewJoinReview()"></div><div><label>允许值（逗号分隔）</label><input value="${esc((f.options||[]).join(', '))}" ${f.kind==='options'?'':'disabled'} oninput="joinData.fields[${i}].options=this.value.split(',').map(x=>x.trim()).filter(Boolean);previewJoinReview()"></div><div><label>最少字数</label><input type="number" min="1" max="50" value="${f.min_length}" oninput="joinData.fields[${i}].min_length=Number(this.value)"></div><div><label>最多字数</label><input type="number" min="1" max="100" value="${f.max_length}" oninput="joinData.fields[${i}].max_length=Number(this.value)"></div></div></div>`).join('')||'<div class="empty">请至少添加一项申请内容</div>'}
 function addJoinField(){joinData.fields.push({name:'新项目',kind:'text',options:[],example:'示例内容',min_length:1,max_length:30});renderJoinFields();previewJoinReview()}
 function moveJoinField(i,d){const n=i+d;if(n<0||n>=joinData.fields.length)return;[joinData.fields[i],joinData.fields[n]]=[joinData.fields[n],joinData.fields[i]];renderJoinFields();previewJoinReview()}
-async function loadJoinReview(){try{joinData=await api('join-review');ensureJoinEditor();joinEnabled.checked=joinData.enabled;joinForbidden.value=joinData.forbidden_words.join('\n');joinAutoReject.checked=joinData.auto_reject_invalid;joinRejectReason.value=joinData.reject_reason;renderJoinFields();previewJoinReview()}catch(e){toast(e.message,true)}}
-function previewJoinReview(){if(!joinData)return;const example=joinData.fields.map(f=>f.example||f.name).join(' ＋ '),details=joinData.fields.map(f=>`${f.name}：${f.kind==='options'?'可填写 '+(f.options||[]).join('、'):f.kind==='number'?'填写数字':f.kind==='chinese'?'填写中文':'填写文字'}`).join('；');joinPreview.innerHTML=`<b>符合条件的格式：</b>${esc(example||'请先添加项目')}<br><span class="label">${esc(details)}</span>`}
-async function saveJoinReview(){try{const lines=id=>document.getElementById(id).value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),body={enabled:joinEnabled.checked,fields:joinData.fields,forbidden_words:lines('joinForbidden'),auto_reject_invalid:joinAutoReject.checked,reject_reason:joinRejectReason.value};const d=await api('join-review',{method:'PUT',body:JSON.stringify(body)});toast(d.message);loadJoinReview()}catch(e){toast(e.message,true)}}
+async function loadJoinReview(){try{joinData=await api('join-review');ensureJoinEditor();joinEnabled.checked=joinData.enabled;joinRosterEnabled.checked=joinData.roster_enabled;joinForbidden.value=joinData.forbidden_words.join('\n');joinAutoReject.checked=joinData.auto_reject_invalid;joinRejectReason.value=joinData.reject_reason;renderJoinFields();previewJoinReview();loadJoinRoster()}catch(e){toast(e.message,true)}}
+function previewJoinReview(){if(!joinData)return;const example=joinData.fields.map(f=>f.example||f.name).join(' ＋ '),details=joinData.fields.map(f=>`${f.name}：${f.kind==='options'?'可填写 '+(f.options||[]).join('、'):f.kind==='number'?'填写数字':f.kind==='chinese'?'填写中文':'填写文字'}`).join('；');joinPreview.innerHTML=`<b>名单班群：</b>必须填写“姓名＋学号”且与本班名单一致。<br><b>其他群格式：</b>${esc(example||'请先添加项目')}<br><span class="label">${esc(details)}</span>`}
+async function saveJoinReview(){try{const lines=id=>document.getElementById(id).value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),body={enabled:joinEnabled.checked,roster_enabled:joinRosterEnabled.checked,fields:joinData.fields,forbidden_words:lines('joinForbidden'),auto_reject_invalid:joinAutoReject.checked,reject_reason:joinRejectReason.value};const d=await api('join-review',{method:'PUT',body:JSON.stringify(body)});toast(d.message);loadJoinReview()}catch(e){toast(e.message,true)}}
+async function uploadJoinRoster(){const file=joinRosterFile.files[0];if(!file)return toast('请先选择XLSX新生名单',true);if(!confirm('导入后会替换当前本机名单，是否继续？'))return;const form=new FormData();form.append('roster_file',file);try{const r=await fetch('/qq-admin/api/join-roster/import',{method:'POST',headers:{'X-Admin-Token':token},body:form}),d=await r.json();if(!r.ok)throw new Error(d.detail||'名单导入失败');toast(d.message);joinRosterFile.value='';await loadJoinRoster()}catch(e){toast(e.message,true)}}
+async function loadJoinRoster(){try{const [r,h]=await Promise.all([api('join-roster'),api('join-roster/history')]);joinRosterSummary.innerHTML=r.student_count?`<b>${r.student_count}</b> 名新生，<b>${Object.keys(r.classes).length}</b> 个班级<br><span class="label">文件：${esc(r.source||'本机名单')}　导入时间：${esc((r.imported_at||'').replace('T',' ').slice(0,19))}</span><br>${Object.entries(r.classes).map(([name,count])=>`<span class="chip">${esc(name)} ${count}人</span>`).join(' ')}`:'尚未导入新生名单';joinRosterGroups.innerHTML=r.groups.length?r.groups.map(g=>`<tr><td>${esc(g.group_name)}</td><td>${g.group_id}</td><td>${esc(g.class_name||'未识别')}</td><td>${g.matched?'<span style="color:#18794e">已匹配</span>':'<span style="color:#c43d3d">需检查群名称</span>'}</td></tr>`).join(''):'<tr><td colspan="4" class="empty">机器人离线或没有识别到2026级班群</td></tr>';const labels={join_approved_roster:'自动通过',join_pending_roster:'人工审核',join_rejected:'已拒绝',join_rejected_format:'格式拒绝',join_pending_manual:'人工审核',join_approved:'自动通过'};joinRosterHistory.innerHTML=h.length?h.map(x=>`<tr><td>${esc((x.time||'').replace('T',' ').slice(0,19))}</td><td>${esc(x.class_name||'—')}</td><td>${esc(labels[x.action]||x.action)}</td><td>${esc(x.student_id||'—')}</td><td>${esc(x.reason||'—')}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">暂无审核记录</td></tr>'}catch(e){toast(e.message,true)}}
 function ensurePromotionEditor(){promotion.innerHTML=`<div class="card"><div class="top"><div><h3>社团宣传主持</h3><div class="label">机器人会在每个环节的开始时间自动介绍当前宣传部门。</div></div><label><input id="promotionEnabled" type="checkbox" style="width:auto"> 启用本次活动</label></div><div class="row"><div class="field"><label>活动日期</label><input id="promotionDate" type="date"></div><div class="field"><label>发送群号（留空使用主群）</label><input id="promotionGroup" inputmode="numeric" placeholder="使用主群"></div></div><div class="field"><label>统一主持词模板</label><textarea id="promotionTemplate" style="min-height:120px"></textarea><div class="label">可用内容：{department} 社团名称、{start_time} 开始时间、{end_time} 结束时间、{content} 本环节内容。</div></div><div class="schedule"><h3>批量导入流程</h3><div class="label">粘贴后自动按换行、空格或制表符识别。支持：14:00-14:10 团委办公室；14:00 14:10 团委办公室；14:00 团委办公室（默认10分钟）。多条内容也可以放在同一行。</div><textarea id="promotionImportText" style="min-height:150px" placeholder="14:00-14:10 团委办公室&#10;14:10-14:20 网计学院青年志愿者分队"></textarea><div class="toolbar"><button class="btn secondary" onclick="previewPromotionImport()">识别并预览</button><button class="btn" onclick="applyPromotionImport(false)">替换当前流程</button><button class="btn secondary" onclick="applyPromotionImport(true)">追加到流程</button></div><div id="promotionImportPreview" class="label">尚未识别文本</div></div><div class="top"><div><h3>活动流程</h3><div class="label">时间、名称和主持内容均可修改，也可以用上方文本批量生成。</div></div><button class="btn secondary" onclick="addPromotionSlot()">新增环节</button></div><div style="overflow:auto"><table class="table"><thead><tr><th>开始</th><th>结束</th><th>宣传部门/社团</th><th>主持内容</th><th>操作</th></tr></thead><tbody id="promotionRows"></tbody></table></div><div class="toolbar"><button class="btn" onclick="savePromotion()">保存排期设置</button><button class="btn secondary" onclick="previewPromotion()">预览主持词</button></div><div id="promotionPreview" class="schedule"></div></div>`}
 function renderPromotionRows(){promotionRows.innerHTML=promotionData.slots.length?promotionData.slots.map((s,i)=>`<tr><td><input type="time" value="${s.start_time}" onchange="promotionData.slots[${i}].start_time=this.value"></td><td><input type="time" value="${s.end_time}" onchange="promotionData.slots[${i}].end_time=this.value"></td><td><input value="${esc(s.department)}" oninput="promotionData.slots[${i}].department=this.value"></td><td><textarea style="min-height:75px" oninput="promotionData.slots[${i}].content=this.value">${esc(s.content||'')}</textarea></td><td><button class="btn secondary" onclick="sendPromotionNow(${i})">立即发送</button> <button class="btn danger" onclick="promotionData.slots.splice(${i},1);renderPromotionRows()">删除</button></td></tr>`).join(''):'<tr><td colspan="5" class="empty">还没有宣传环节</td></tr>'}
 function addMinutes(value,minutes){const [h,m]=(value||'14:00').split(':').map(Number),d=new Date(2000,0,1,h,m+minutes);return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`}

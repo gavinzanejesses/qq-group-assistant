@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 - 2026-08-15
+
+- Added privacy-minimized XLSX roster import for class, student ID, and name.
+- Added automatic mapping between 2026 class-group names and roster classes.
+- Added exact class/name/student-ID approval with safe manual fallback.
+- Added roster counts, group mapping status, and masked approval history to the web UI.
+
 ## 0.4.0 - 2026-08-09
 
 - Added bulk text import for promotion-host schedules.

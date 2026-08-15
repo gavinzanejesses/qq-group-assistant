@@ -25,6 +25,8 @@ from nonebot.message import event_preprocessor
 from nonebot_plugin_apscheduler import scheduler
 from pydantic import BaseModel, Field, model_validator
 
+from join_roster import evaluate_roster_application, load_roster, match_roster_class
+
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env", override=False)
 CONFIG_PATH = Path(os.getenv("QQ_ASSISTANT_CONFIG", BASE_DIR / "config.yml"))
@@ -38,6 +40,7 @@ PENDING_REMOVALS_REPORT_PATH = BASE_DIR / "pending_removals.csv"
 NONCOMPLIANT_REPORT_PATH = BASE_DIR / "noncompliant_members.csv"
 PUBLIC_ACCOUNT_QR_PATH = BASE_DIR / "assets" / "official_account_qr.png"
 PUSH_HISTORY_PATH = BASE_DIR / "data" / "push_history.jsonl"
+JOIN_ROSTER_PATH = BASE_DIR / "data" / "join_roster.json"
 
 
 class RemarkConfig(BaseModel):
@@ -84,6 +87,7 @@ class JoinReviewConfig(BaseModel):
     name_max_length: int = Field(default=6, ge=1, le=30)
     auto_reject_invalid: bool = False
     fields: list[JoinFieldConfig] = []
+    roster_enabled: bool = False
 
 
 class Rule(BaseModel):
@@ -915,6 +919,39 @@ async def review_join_request(bot: Bot, event: GroupRequestEvent) -> None:
     ):
         return
     comment = event.comment or ""
+    if cfg.join_review.roster_enabled:
+        roster = load_roster(JOIN_ROSTER_PATH)
+        group_info = await bot.get_group_info(group_id=event.group_id, no_cache=False)
+        class_name = match_roster_class(roster, str(group_info.get("group_name", "")))
+        if class_name:
+            approved, reason, student = evaluate_roster_application(roster, class_name, comment)
+            masked_student_id = (
+                f"****{student['student_id'][-4:]}" if student and student.get("student_id") else ""
+            )
+            if approved:
+                await bot.set_group_add_request(
+                    flag=event.flag,
+                    sub_type=event.sub_type,
+                    approve=True,
+                )
+                audit(
+                    "join_approved_roster",
+                    group_id=event.group_id,
+                    user_id=event.user_id,
+                    class_name=class_name,
+                    student_id=masked_student_id,
+                    reason=reason,
+                )
+            else:
+                audit(
+                    "join_pending_roster",
+                    group_id=event.group_id,
+                    user_id=event.user_id,
+                    class_name=class_name,
+                    student_id=masked_student_id,
+                    reason=reason,
+                )
+            return
     if any(word in comment for word in cfg.join_review.forbidden_words) or matches_any(
         cfg.join_review.deny_patterns, comment
     ):
