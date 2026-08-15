@@ -25,7 +25,7 @@ plugins = ["qq_group_assistant"]
 adapters = [{ name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }]
 
 [tool.setuptools]
-py-modules = ["bot", "qq_group_assistant", "qq_assistant_cli", "web_admin"]
+py-modules = ["bot", "join_roster", "qq_group_assistant", "qq_assistant_cli", "web_admin"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
