@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 - 2026-08-15
+
+- Included the roster module in package metadata for Linux and clean installations.
+
 ## 0.5.0 - 2026-08-15
 
 - Added privacy-minimized XLSX roster import for class, student ID, and name.
